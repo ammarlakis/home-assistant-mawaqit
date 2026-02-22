@@ -7,6 +7,7 @@ import logging
 import os
 import shutil
 from typing import Any
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from dateutil import parser as date_parser
 from mawaqit.consts import BadCredentialsException
@@ -167,6 +168,26 @@ class MawaqitPrayerClient:
         """Return the calculation method."""
         return self.config_entry.options[CONF_CALC_METHOD]
 
+    def _get_mosque_timezone(self, pray_time_data: dict[str, Any]) -> ZoneInfo:
+        """Return mosque timezone from MAWAQIT payload, fallback to HA timezone."""
+        timezone_name = pray_time_data.get("timezone")
+        if timezone_name:
+            try:
+                return ZoneInfo(timezone_name)
+            except ZoneInfoNotFoundError:
+                _LOGGER.warning(
+                    "Invalid mosque timezone '%s', fallback to HA timezone",
+                    timezone_name,
+                )
+        return dt_util.DEFAULT_TIME_ZONE
+
+    def _parse_mosque_datetime(
+        self, date_str: str, time_str: str, mosque_tz: ZoneInfo
+    ) -> datetime:
+        """Parse mosque-local datetime."""
+        local_dt = datetime.strptime(f"{date_str} {time_str}", "%Y-%m-%d %H:%M")
+        return local_dt.replace(tzinfo=mosque_tz)
+
     async def get_new_prayer_times(self):
         """Fetch prayer times for today."""
         mawaqit_login = self.config_entry.data.get("username")  # noqa: F841
@@ -188,13 +209,14 @@ class MawaqitPrayerClient:
         )
 
         data_pray_time = await utils.read_pray_time(self.store)
+        mosque_tz = self._get_mosque_timezone(data_pray_time)
 
         # data_pray_time = content
         calendar = data_pray_time["calendar"]
 
         # Then, we get the prayer times of the day into this file
 
-        today = ha_now()
+        today = dt_util.utcnow().astimezone(mosque_tz)
         index_month = today.month - 1
         month_times = calendar[index_month]  # Calendar of the month
 
@@ -259,7 +281,7 @@ class MawaqitPrayerClient:
         # if Jumu'a is set as Dhuhr, then Jumu'a time is the same as Friday's Dhuhr time
         if data_pray_time["jumuaAsDuhr"]:
             # Then, Jumu'a time should be the Dhuhr time of the next Friday
-            today = ha_now().today()
+            today = dt_util.utcnow().astimezone(mosque_tz).date()
             # We get the next Friday
             next_friday = today + timedelta((4 - today.weekday() + 7) % 7)
             # We get the next Friday's Dhuhr time from the calendar
@@ -335,9 +357,10 @@ class MawaqitPrayerClient:
 
         else:  # We retrieve the next Fajr (more calculations).
             data_pray_time = await utils.read_pray_time(self.store)
+            mosque_tz = self._get_mosque_timezone(data_pray_time)
             calendar = data_pray_time["calendar"]
 
-            today = ha_now().today()
+            today = dt_util.utcnow().astimezone(mosque_tz).date()
             index_month = today.month - 1
             month_times = calendar[index_month]
 
@@ -368,8 +391,12 @@ class MawaqitPrayerClient:
             fajr_hour = day_times[0]
 
             self.prayer_times_info["Next Salat Name"] = "Fajr"
-            self.prayer_times_info["Next Salat Time"] = dt_util.parse_datetime(
-                f"{today.year}-{today.month}-{index_day} {fajr_hour}:00"
+            self.prayer_times_info["Next Salat Time"] = (
+                self._parse_mosque_datetime(
+                    f"{today.year}-{today.month}-{index_day}",
+                    fajr_hour,
+                    mosque_tz,
+                )
             )
 
         countdown_next_prayer = 15
@@ -400,11 +427,15 @@ class MawaqitPrayerClient:
         _LOGGER.debug("[;] ha_now() times : %s", ha_now().time())
         _LOGGER.debug("[;] ha_now() date : %s", ha_now().date())
 
-        for prayer, time in prayer_times.items():
-            tomorrow = (ha_now().date() + timedelta(days=1)).strftime("%Y-%m-%d")
-            today = ha_now().date().strftime("%Y-%m-%d")
+        data_pray_time = await utils.read_pray_time(self.store)
+        mosque_tz = self._get_mosque_timezone(data_pray_time)
+        mosque_now = dt_util.utcnow().astimezone(mosque_tz)
 
-            now = ha_now().time().strftime("%H:%M")
+        for prayer, time in prayer_times.items():
+            tomorrow = (mosque_now.date() + timedelta(days=1)).strftime("%Y-%m-%d")
+            today = mosque_now.date().strftime("%Y-%m-%d")
+
+            now = mosque_now.time().strftime("%H:%M")
             _LOGGER.debug("[;] is_date_parsing(%s) : %s ", time, is_date_parsing(time))
             if is_date_parsing(time):
                 if datetime.strptime(time, "%H:%M") < datetime.strptime(now, "%H:%M"):
@@ -420,8 +451,8 @@ class MawaqitPrayerClient:
                     # We convert the date to string to be able to put it in the dictionary.
                     pray = pray_date.strftime("%Y-%m-%d")
 
-                self.prayer_times_info[prayer] = dt_util.parse_datetime(
-                    f"{pray} {time}"
+                self.prayer_times_info[prayer] = self._parse_mosque_datetime(
+                    pray, time, mosque_tz
                 )
                 _LOGGER.info(
                     "[;] [async_update] self.prayer_times_info[prayer] : %s",

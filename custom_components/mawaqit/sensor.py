@@ -9,7 +9,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.storage import Store
-import homeassistant.util.dt as dt_util
 
 from . import utils
 from .const import (
@@ -90,7 +89,7 @@ class MawaqitPrayerTimeSensor(SensorEntity):
 
     @property
     def native_value(self):
-        """Return the state of the sensor.  .astimezone(dt_util.UTC)."""
+        """Return the state of the sensor."""
         if self.sensor_type in [
             "Fajr",
             "Shurouq",
@@ -112,10 +111,8 @@ class MawaqitPrayerTimeSensor(SensorEntity):
             time = self.client.prayer_times_info.get(self.sensor_type)
             _LOGGER.debug("[;] before %s Time: %s", self.sensor_type, time)
             if time is not None:
-                _LOGGER.debug(
-                    "[;] %s Time: %s", self.sensor_type, time.astimezone(dt_util.UTC)
-                )
-                return time.astimezone(dt_util.UTC)
+                _LOGGER.debug("[;] %s Time: %s", self.sensor_type, time)
+                return time
 
             return None
 
